@@ -140,33 +140,60 @@ jobs:
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
+
           if [ -z "${KEYSTORE_BASE64:-}" ]; then
-            echo "::error::缺少 ANDROID_KEY_BASE64 secret，无法签名"; exit 1
+            echo "::error::缺少 ANDROID_KEY_BASE64 secret"
+            exit 1
           fi
+
+          if [ -z "${KEY_ALIAS:-}" ] || [ -z "${STORE_PASSWORD:-}" ] || [ -z "${KEY_PASSWORD:-}" ]; then
+            echo "::error::签名别名或密码 Secret 缺失"
+            exit 1
+          fi
+
           KS="$RUNNER_TEMP/release.keystore"
-          echo "$KEYSTORE_BASE64" | base64 -d > "$KS"
+          trap 'rm -f "$KS"' EXIT
+
+          printf '%s' "$KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > "$KS"
+          chmod 600 "$KS"
+
+          echo "签名文件已解码，字节数：$(wc -c < "$KS" | tr -d ' ')"
+
+          if ! keytool -list -keystore "$KS" -storetype PKCS12 \
+              -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null; then
+            echo "::error::PKCS12 验证失败，请检查密钥文件、密钥库密码和别名是否匹配"
+            exit 1
+          fi
+
+          echo "PKCS12 文件、密钥库密码和别名验证通过。"
+
           BT="$(ls "$ANDROID_SDK_ROOT/build-tools" | sort -V | tail -1)"
           APKSIGNER="$ANDROID_SDK_ROOT/build-tools/$BT/apksigner"
           mkdir -p artifacts
           found=0
-          for f in $(find src-tauri/gen/android/app/build/outputs/apk -name '*-release*.apk'); do
+
+          while IFS= read -r -d '' f; do
             abi="$(basename "$(dirname "$(dirname "$f")")")"
             out="artifacts/HGhub_${VERSION}_${abi}.apk"
+
             "$APKSIGNER" sign \
-              --ks "$KS" --ks-key-alias "$KEY_ALIAS" \
-              --ks-pass "pass:$STORE_PASSWORD" --key-pass "pass:$KEY_PASSWORD" \
+              --ks "$KS" \
+              --ks-key-alias "$KEY_ALIAS" \
+              --ks-pass "pass:$STORE_PASSWORD" \
+              --key-pass "pass:$KEY_PASSWORD" \
               --v4-signing-enabled false \
               --out "$out" "$f"
+
             "$APKSIGNER" verify --print-certs "$out" | head -3
             found=$((found+1))
-          done
-          rm -f "$KS"
-          if [ "$found" -eq 0 ]; then echo "::error::没有找到 release APK"; exit 1; fi
-          ls -lh artifacts
+          done < <(find src-tauri/gen/android/app/build/outputs/apk -name '*-release*.apk' -print0)
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: android
+          if [ "$found" -eq 0 ]; then
+            echo "::error::没有找到 release APK"
+            exit 1
+          fi
+
+          ls -lh artifacts
           path: artifacts/*
           if-no-files-found: error
 
