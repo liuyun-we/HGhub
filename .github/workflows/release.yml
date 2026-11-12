@@ -193,10 +193,13 @@ jobs:
             exit 1
           fi
 
-          ls -lh artifacts
+                    ls -lh artifacts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
           path: artifacts/*
           if-no-files-found: error
-
   # ================= macOS：Universal（Apple Silicon + Intel）dmg =================
   macos:
     name: macOS (universal dmg)
